@@ -1,0 +1,9 @@
+_build/
+deps/
+doc/
+.git/
+.github/
+.circleci/
+.elixir_ls/
+cover/
+*.ez
