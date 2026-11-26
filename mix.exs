@@ -59,7 +59,7 @@ defmodule Speedtest.MixProject do
       main: "readme",
       name: "Speedtest",
       source_ref: "v#{@version}",
-      canonical: "https://hexdocs.pm",
+      canonical: "https://hexdocs.pm/speedtest",
       source_url: @source_url,
       extras: ["README.md", "CHANGELOG.md", "LICENSE"]
     ]
