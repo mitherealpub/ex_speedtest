@@ -1,325 +1,252 @@
 defmodule Speedtest.Decoder do
+  @moduledoc """
+  Decodes XML configuration and server list responses from the Speedtest API.
+  """
+
   import SweetXml
 
-  @moduledoc false
-
-  ## in bytes
-
   @download_sizes [350, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500, 4000]
-  @upload_sizes [32768, 65536, 131_072, 262_144, 524_288, 1_048_576, 7_340_032]
+  @upload_sizes [32_768, 65_536, 131_072, 262_144, 524_288, 1_048_576, 7_340_032]
 
-  def url(data) do
-    url = String.split(data, ":")
-    List.first(url)
+  @doc """
+  Extracts the host/scheme prefix before the first colon in a URL string.
+  """
+  @spec url(String.t()) :: String.t()
+  def url(data) when is_binary(data) do
+    data |> String.split(":", parts: 2) |> hd()
   end
 
+  @doc """
+  Decodes the `<client>` attributes from an HTTP response struct or XML body.
+  """
+  @spec client(%{body: iodata()} | iodata()) :: map()
   def client(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//client",
-        ip: ~x"./@ip",
-        lat: ~x"./@lat",
-        lon: ~x"./@lon",
-        isp: ~x"./@isp",
-        country: ~x"./@country",
-        isprating: ~x"./@isprating",
-        rating: ~x"./@rating",
-        ispdlavg: ~x"./@ispdlavg",
-        ispulavg: ~x"./@ispulavg"
-      )
-
-    %{
-      ip: to_string(result.ip),
-      lat: to_float(result.lat),
-      lon: to_float(result.lon),
-      isp: to_string(result.isp),
-      country: to_string(result.country),
-      isprating: to_string(result.isprating),
-      rating: to_string(result.rating),
-      ispdlavg: to_string(result.ispdlavg),
-      ispulavg: to_string(result.ispulavg)
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//client",
+      ip: ~x"./@ip"s,
+      lat: ~x"./@lat"f,
+      lon: ~x"./@lon"f,
+      isp: ~x"./@isp"s,
+      country: ~x"./@country"s,
+      isprating: ~x"./@isprating"s,
+      rating: ~x"./@rating"s,
+      ispdlavg: ~x"./@ispdlavg"s,
+      ispulavg: ~x"./@ispulavg"s
+    )
   end
 
+  @doc """
+  Decodes all `<server>` elements from `<servers>`.
+  """
+  @spec server(%{body: iodata()} | iodata()) :: [map()]
   def server(data) do
-    results =
-      data.body
-      |> xpath(
-        ~x"//servers/server"l,
-        url: ~x"./@url",
-        lat: ~x"./@lat",
-        lon: ~x"./@lon",
-        name: ~x"./@name",
-        country: ~x"./@country",
-        cc: ~x"./@cc",
-        sponsor: ~x"./@sponsor",
-        id: ~x"./@id",
-        host: ~x"./@host"
-      )
-
-    Enum.map(results, fn result ->
-      %{
-        url: to_string(result.url),
-        lat: to_float(result.lat),
-        lon: to_float(result.lon),
-        name: to_string(result.name),
-        country: to_string(result.country),
-        cc: to_string(result.cc),
-        sponsor: to_string(result.sponsor),
-        id: to_string(result.id),
-        host: to_string(result.host)
-      }
-    end)
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//servers/server"l,
+      url: ~x"./@url"s,
+      lat: ~x"./@lat"f,
+      lon: ~x"./@lon"f,
+      name: ~x"./@name"s,
+      country: ~x"./@country"s,
+      cc: ~x"./@cc"s,
+      sponsor: ~x"./@sponsor"s,
+      id: ~x"./@id"s,
+      host: ~x"./@host"s
+    )
   end
 
+  @doc """
+  Decodes `<server-config>` attributes.
+  """
+  @spec server_config(%{body: iodata()} | iodata()) :: map()
   def server_config(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//server-config",
-        threadcount: ~x"./@threadcount",
-        notonmap: ~x"./@notonmap",
-        forcepingid: ~x"./@forcepingid",
-        preferredserverid: ~x"./@preferredserverid",
-        ignoreids: ~x"./@ignoreids"
-      )
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//server-config",
+      threadcount: ~x"./@threadcount"i,
+      notonmap: ~x"./@notonmap"s,
+      forcepingid: ~x"./@forcepingid"s,
+      preferredserverid: ~x"./@preferredserverid"s,
+      ignoreids: ~x"./@ignoreids"s
+    )
+  end
+
+  @doc """
+  Builds the combined test configuration map from `<server-config>`, `<download>`,
+  `<upload>`, and `<client>`.
+  """
+  @spec config(%{body: iodata()} | iodata()) :: map()
+  def config(data) do
+    body = extract_body(data)
+    srv_cfg = server_config(body)
+    dl = download(body)
+    ul = upload(body)
+    cl = client(body)
+
+    upload_sizes = Enum.slice(@upload_sizes, (ul.ratio - 1)..-1//1)
+    size_count = length(upload_sizes)
+    upload_count = round(ul.maxchunkcount / size_count)
 
     %{
-      threadcount: to_integer(result.threadcount),
-      notonmap: result.notonmap,
-      forcepingid: result.forcepingid,
-      preferredserverid: result.preferredserverid,
-      ignoreids: result.ignoreids
-    }
-  end
-
-  def config(data) do
-    server_config = server_config(data)
-
-    download = download(data)
-
-    upload = upload(data)
-
-    client = client(data)
-
-    head = upload.ratio - 1
-
-    tail = Enum.count(@upload_sizes) - 1
-
-    upload_sizes = Enum.slice(@upload_sizes, head..tail)
-
-    sizes = %{upload: upload_sizes, download: @download_sizes}
-
-    size_count = Enum.count(sizes.upload)
-
-    upload_count = upload.maxchunkcount / size_count
-
-    upload_count = Float.round(upload_count)
-
-    counts = %{upload: upload_count, download: download.threads}
-
-    threads = %{upload: upload.threads, download: server_config.threadcount * 2}
-
-    length = %{upload: upload.testlength, download: download.testlength}
-
-    reply = %{
-      client: client,
-      ignore_servers: server_config.ignoreids,
-      sizes: sizes,
-      counts: counts,
-      threads: threads,
-      length: length,
+      client: cl,
+      ignore_servers: srv_cfg.ignoreids,
+      sizes: %{upload: upload_sizes, download: @download_sizes},
+      counts: %{upload: upload_count, download: dl.threads},
+      threads: %{upload: ul.threads, download: srv_cfg.threadcount * 2},
+      length: %{upload: ul.testlength, download: dl.testlength},
       upload_max: upload_count * size_count
     }
-
-    reply
   end
 
-  def to_integer(data) do
-    data = to_string(data)
-
-    String.to_integer(data)
-  end
-
-  def to_float(data) do
-    data = to_string(data)
-
-    String.to_float(data)
-  end
-
+  @doc """
+  Decodes `<licensekey>` text.
+  """
+  @spec license(%{body: iodata()} | iodata()) :: String.t()
   def license(data) do
-    result =
-      data.body
-      |> xpath(~x"//licensekey/text()")
-
-    to_string(result)
+    data
+    |> extract_body()
+    |> xpath(~x"//licensekey/text()"s)
   end
 
+  @doc """
+  Decodes `<odometer>` attributes.
+  """
+  @spec odometer(%{body: iodata()} | iodata()) :: map()
   def odometer(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//odometer",
-        start: ~x"./@start",
-        rate: ~x"./@rate"
-      )
-
-    %{start: to_integer(result.start), rate: to_integer(result.rate)}
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//odometer",
+      start: ~x"./@start"i,
+      rate: ~x"./@rate"i
+    )
   end
 
+  @doc """
+  Decodes `<download>` attributes.
+  """
+  @spec download(%{body: iodata()} | iodata()) :: map()
   def download(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//download",
-        testlength: ~x"./@testlength",
-        initialtest: ~x"./@initialtest",
-        mintestsize: ~x"./@mintestsize",
-        threadsperurl: ~x"./@threadsperurl"
-      )
-
-    %{
-      testlength: to_integer(result.testlength),
-      initialtest: to_string(result.initialtest),
-      mintestsize: to_string(result.mintestsize),
-      threads: to_integer(result.threadsperurl)
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//download",
+      testlength: ~x"./@testlength"i,
+      initialtest: ~x"./@initialtest"s,
+      mintestsize: ~x"./@mintestsize"s,
+      threads: ~x"./@threadsperurl"i
+    )
   end
 
+  @doc """
+  Decodes `<upload>` attributes.
+  """
+  @spec upload(%{body: iodata()} | iodata()) :: map()
   def upload(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//upload",
-        testlength: ~x"./@testlength",
-        ratio: ~x"./@ratio",
-        initialtest: ~x"./@initialtest",
-        mintestsize: ~x"./@mintestsize",
-        threads: ~x"./@threads",
-        maxchunksize: ~x"./@maxchunksize",
-        maxchunkcount: ~x"./@maxchunkcount",
-        threadsperurl: ~x"./@threadsperurl"
-      )
-
-    %{
-      ratio: to_integer(result.ratio),
-      maxchunksize: to_string(result.maxchunksize),
-      threads: to_integer(result.threads),
-      testlength: to_integer(result.testlength),
-      initialtest: to_integer(result.initialtest),
-      mintestsize: to_string(result.mintestsize),
-      maxchunkcount: to_integer(result.maxchunkcount)
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//upload",
+      testlength: ~x"./@testlength"i,
+      ratio: ~x"./@ratio"i,
+      initialtest: ~x"./@initialtest"i,
+      mintestsize: ~x"./@mintestsize"s,
+      threads: ~x"./@threads"i,
+      maxchunksize: ~x"./@maxchunksize"s,
+      maxchunkcount: ~x"./@maxchunkcount"i
+    )
   end
 
+  @doc """
+  Decodes `<latency>` attributes.
+  """
+  @spec latency(%{body: iodata()} | iodata()) :: map()
   def latency(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//latency",
-        testlength: ~x"./@testlength",
-        waittime: ~x"./@waittime",
-        timeout: ~x"./@timeout"
-      )
-
-    %{
-      testlength: to_integer(result.testlength),
-      waittime: to_integer(result.waittime),
-      timeout: to_integer(result.timeout)
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//latency",
+      testlength: ~x"./@testlength"i,
+      waittime: ~x"./@waittime"i,
+      timeout: ~x"./@timeout"i
+    )
   end
 
+  @doc """
+  Decodes `<socket-download>` attributes.
+  """
+  @spec socket_download(%{body: iodata()} | iodata()) :: map()
   def socket_download(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//socket-download",
-        testlength: ~x"./@testlength",
-        initialthreads: ~x"./@initialthreads",
-        minthreads: ~x"./@minthreads",
-        maxthreads: ~x"./@maxthreads",
-        threadratio: ~x"./@threadratio",
-        maxsamplesize: ~x"./@maxsamplesize",
-        minsamplesize: ~x"./@minsamplesize",
-        startsamplesize: ~x"./@startsamplesize",
-        startbuffersize: ~x"./@startbuffersize",
-        bufferlength: ~x"./@bufferlength",
-        packetlength: ~x"./@packetlength",
-        readbuffer: ~x"./@readbuffer"
-      )
-
-    %{
-      testlength: to_integer(data.testlength),
-      initialthreads: to_integer(result.initialthreads),
-      minthreads: to_integer(result.minthreads),
-      maxthreads: to_integer(result.maxthreads),
-      threadratio: to_string(data.threadratio),
-      maxsamplesize: to_integer(data.maxsamplesize),
-      minsamplesize: to_integer(data.minsamplesize),
-      startsamplesize: to_integer(data.startsamplesize),
-      startbuffersize: to_integer(data.startbuffersize),
-      bufferlength: to_integer(data.bufferlength),
-      packetlength: to_integer(data.packetlength),
-      readbuffer: to_integer(data.readbuffer)
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//socket-download",
+      testlength: ~x"./@testlength"i,
+      initialthreads: ~x"./@initialthreads"i,
+      minthreads: ~x"./@minthreads"i,
+      maxthreads: ~x"./@maxthreads"i,
+      threadratio: ~x"./@threadratio"s,
+      maxsamplesize: ~x"./@maxsamplesize"i,
+      minsamplesize: ~x"./@minsamplesize"i,
+      startsamplesize: ~x"./@startsamplesize"i,
+      startbuffersize: ~x"./@startbuffersize"i,
+      bufferlength: ~x"./@bufferlength"i,
+      packetlength: ~x"./@packetlength"i,
+      readbuffer: ~x"./@readbuffer"i
+    )
   end
 
+  @doc """
+  Decodes `<socket-upload>` attributes.
+  """
+  @spec socket_upload(%{body: iodata()} | iodata()) :: map()
   def socket_upload(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//socket-upload",
-        testlength: ~x"./@testlength",
-        initialthreads: ~x"./@initialthreads",
-        minthreads: ~x"./@minthreads",
-        maxthreads: ~x"./@maxthreads",
-        threadratio: ~x"./@threadratio",
-        maxsamplesize: ~x"./@maxsamplesize",
-        minsamplesize: ~x"./@minsamplesize",
-        startsamplesize: ~x"./@startsamplesize",
-        startbuffersize: ~x"./@startbuffersize",
-        bufferlength: ~x"./@bufferlength",
-        packetlength: ~x"./@packetlength",
-        disabled: ~x"./@disabled"
-      )
-
-    disabled? =
-      case result.disabled == "true" do
-        true -> true
-        false -> false
-      end
-
-    %{
-      testlength: to_integer(data.testlength),
-      initialthreads: to_string(result.initialthreads),
-      minthreads: to_string(result.minthreads),
-      maxthreads: to_integer(result.maxthreads),
-      threadratio: to_string(data.threadratio),
-      maxsamplesize: to_integer(data.maxsamplesize),
-      minsamplesize: to_integer(data.minsamplesize),
-      startsamplesize: to_integer(data.startsamplesize),
-      startbuffersize: to_integer(data.startbuffersize),
-      bufferlength: to_integer(data.bufferlength),
-      packetlength: to_integer(data.packetlength),
-      disabled: disabled?
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//socket-upload",
+      testlength: ~x"./@testlength"i,
+      initialthreads: ~x"./@initialthreads"s,
+      minthreads: ~x"./@minthreads"s,
+      maxthreads: ~x"./@maxthreads"i,
+      threadratio: ~x"./@threadratio"s,
+      maxsamplesize: ~x"./@maxsamplesize"i,
+      minsamplesize: ~x"./@minsamplesize"i,
+      startsamplesize: ~x"./@startsamplesize"i,
+      startbuffersize: ~x"./@startbuffersize"i,
+      bufferlength: ~x"./@bufferlength"i,
+      packetlength: ~x"./@packetlength"i,
+      disabled: ~x"./@disabled"s
+    )
+    |> Map.update!(:disabled, &(&1 == "true"))
   end
 
+  @doc """
+  Decodes `<socket-latency>` attributes.
+  """
+  @spec socket_latency(%{body: iodata()} | iodata()) :: map()
   def socket_latency(data) do
-    result =
-      data.body
-      |> xpath(
-        ~x"//socket-latency",
-        testlength: ~x"./@testlength",
-        waittime: ~x"./@waittime",
-        timeout: ~x"./@timeout"
-      )
-
-    %{
-      testlength: to_integer(result.testlength),
-      waittime: to_integer(result.waittime),
-      timeout: to_integer(result.timeout)
-    }
+    data
+    |> extract_body()
+    |> xpath(
+      ~x"//socket-latency",
+      testlength: ~x"./@testlength"i,
+      waittime: ~x"./@waittime"i,
+      timeout: ~x"./@timeout"i
+    )
   end
+
+  # Keeps backwards compatibility if any external caller relied on these helpers
+  @doc false
+  def to_integer(data), do: data |> to_string() |> String.to_integer()
+
+  @doc false
+  def to_float(data), do: data |> to_string() |> String.to_float()
+
+  defp extract_body(%{body: body}), do: body
+  defp extract_body(body), do: body
 end
