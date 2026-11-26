@@ -9,14 +9,14 @@ defmodule Speedtest.Ping do
     * `:icmp` — Uses the system `ping` binary (Linux, macOS, and Alpine/BusyBox).
   """
 
+  alias Speedtest.{Decoder, HTTP}
+
   @default_count 5
   @default_timeout 5_000
   @user_agent "Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/33.0.1750.117 Safari/537.36"
 
   @type method :: :http | :icmp
   @type ping_result :: {:ok, String.t(), float()} | {:error, String.t(), term()}
-
-  alias Speedtest.Decoder
 
   @doc """
   Measures latency to a target host/IP and returns `{:ok, target, avg_ms}` or
@@ -67,17 +67,17 @@ defmodule Speedtest.Ping do
   end
 
   defp measure_http_once(url, headers, opts) do
-    {elapsed_us, resp} = :timer.tc(fn -> HTTPoison.get(url, headers, opts) end)
+    {elapsed_us, resp} = :timer.tc(fn -> HTTP.client().get(url, headers, opts) end)
 
     case resp do
-      {:ok, %HTTPoison.Response{status_code: 200, body: body}} ->
+      {:ok, %{status_code: 200, body: body}} ->
         if String.trim(body) == "test=test" do
           {:ok, elapsed_us / 1_000}
         else
           {:error, :unexpected_body}
         end
 
-      {:ok, %HTTPoison.Response{status_code: status}} ->
+      {:ok, %{status_code: status}} ->
         {:error, {:http_status, status}}
 
       {:error, reason} ->

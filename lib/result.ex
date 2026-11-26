@@ -6,9 +6,11 @@ defmodule Speedtest.Result do
 
   import Speedtest.Decoder, only: [to_integer: 1]
 
+  alias Speedtest.HTTP
+
   @default_key "297aae72"
-  @share_url "https://www.speedtest.net/api/api.php"
-  @share_headers [{"Referer", "http://c.speedtest.net/flash/speedtest.swf"}]
+  @share_url "https://speedtest.net"
+  @share_headers [{"Referer", "http://speedtest.net"}]
 
   defstruct download: nil,
             upload: nil,
@@ -75,19 +77,18 @@ defmodule Speedtest.Result do
 
     body = build_share_payload(result, rounded_ping, download_kbps, upload_kbps)
 
-    with {:ok, %HTTPoison.Response{status_code: 200, body: resp_body}} <-
-           HTTPoison.post(@share_url, body, @share_headers),
+    with {:ok, %{status_code: 200, body: resp_body}} <-
+           HTTP.client().post(@share_url, body, @share_headers, []),
          {:ok, result_id} <- parse_result_id(resp_body) do
       {:ok, %{result | share: "https://speedtest.net{result_id}.png"}}
     else
-      {:ok, %HTTPoison.Response{status_code: status, body: resp_body}} ->
+      {:ok, %{status_code: status, body: resp_body}} ->
         {:error, {:http_error, status, resp_body}}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
-
   # --- Private Helpers ---
 
   defp calculate_metrics([]), do: {0.0, 0.0, 0}
@@ -112,7 +113,7 @@ defmodule Speedtest.Result do
     end
   end
 
-  defp extract_ping_ms({:ok, _ip, ms}), do: ms
+  defp extract_ping_ms({:ok, _host, ms}), do: ms
   defp extract_ping_ms(ms) when is_number(ms), do: ms
 
   defp build_share_payload(result, ping, download, upload) do

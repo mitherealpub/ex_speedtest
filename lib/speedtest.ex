@@ -5,7 +5,7 @@ defmodule Speedtest do
 
   require Logger
 
-  alias Speedtest.{Decoder, Ping, Result}
+  alias Speedtest.{Decoder, HTTP, Ping, Result}
 
   @ttl 25_000
   @config_url "https://speedtest.net"
@@ -35,9 +35,6 @@ defmodule Speedtest do
           result: Result.t() | nil
         }
 
-  @doc """
-  Sets up the base `%Speedtest{}` struct from application environment configuration.
-  """
   @spec init() :: {:ok, t()}
   def init do
     {:ok,
@@ -48,10 +45,6 @@ defmodule Speedtest do
      }}
   end
 
-  @doc """
-  Retrieves the list of Speedtest.net servers, trying fallback URLs if the primary
-  endpoint fails, and applies any `:include` / `:exclude` server ID filters.
-  """
   @spec fetch_servers(t()) :: {:ok, t()} | {:error, term()}
   def fetch_servers(%__MODULE__{} = speedtest \\ %__MODULE__{}) do
     Logger.info("Retrieving speedtest.net server list...")
@@ -66,9 +59,6 @@ defmodule Speedtest do
     end
   end
 
-  @doc """
-  Calculates distance (in meters) from the client's coordinates to each server.
-  """
   @spec distance(t()) :: {:ok, t()}
   def distance(%__MODULE__{} = speedtest \\ %__MODULE__{}) do
     client_coords = [speedtest.config.client.lat, speedtest.config.client.lon]
@@ -86,9 +76,6 @@ defmodule Speedtest do
     {:ok, %{speedtest | servers: servers}}
   end
 
-  @doc """
-  Limits servers to the closest ones based on geographic distance.
-  """
   @spec choose_closest_servers(list(map()), pos_integer()) :: list(map())
   def choose_closest_servers(servers \\ [], amount \\ 5) do
     servers
@@ -96,10 +83,6 @@ defmodule Speedtest do
     |> Enum.take(amount)
   end
 
-  @doc """
-  Pings candidate servers concurrently and selects the server with the lowest latency.
-  Supports `:method` (`:http` or `:icmp`), `:count`, and `:timeout` options.
-  """
   @spec choose_best_server(list(map()), keyword()) :: {:ok, map()} | {:error, :no_reachable_servers}
   def choose_best_server(servers, opts \\ []) when is_list(servers) do
     Logger.info("Selecting best server based on ping...")
@@ -126,9 +109,6 @@ defmodule Speedtest do
       server -> {:ok, server}
     end
   end
-  @doc """
-  Tests download speed against the selected Speedtest.net server.
-  """
   @spec download(t()) :: {:ok, list(map())}
   def download(%__MODULE__{} = speedtest \\ %__MODULE__{}) do
     Logger.info("Testing download speed...")
@@ -150,9 +130,6 @@ defmodule Speedtest do
     {:ok, responses}
   end
 
-  @doc """
-  Tests upload speed against the selected Speedtest.net server.
-  """
   @spec upload(t()) :: {:ok, list(map())}
   def upload(%__MODULE__{} = speedtest \\ %__MODULE__{}) do
     Logger.info("Testing upload speed...")
@@ -175,9 +152,6 @@ defmodule Speedtest do
     {:ok, responses}
   end
 
-  @doc """
-  Runs the full Speedtest.net test suite end-to-end.
-  """
   @spec run(keyword()) :: {:ok, t()} | {:error, term()}
   def run(opts \\ []) do
     with {:ok, st} <- init(),
@@ -210,10 +184,6 @@ defmodule Speedtest do
     end
   end
 
-  @doc """
-  Measures latency to a target host or IP. Accepts `:method` (`:http` or `:icmp`),
-  `:count`, and `:timeout` options.
-  """
   @spec ping(String.t(), keyword()) :: Ping.ping_result()
   def ping(target, opts \\ []), do: Ping.ping(target, opts)
 
@@ -266,14 +236,14 @@ defmodule Speedtest do
   defp timed_fetch(url) do
     {elapsed_us, result} =
       :timer.tc(fn ->
-        HTTPoison.get(url, default_headers(), recv_timeout: @ttl)
+        HTTP.client().get(url, default_headers(), recv_timeout: @ttl)
       end)
 
-    with {:ok, %HTTPoison.Response{status_code: 200, headers: headers, body: body}} <- result do
+    with {:ok, %{status_code: 200, headers: headers, body: body}} <- result do
       bytes = content_length(headers, body)
       {:ok, %{elapsed_time: elapsed_us / 1_000_000, bytes: bytes, url: url}}
     else
-      {:ok, %HTTPoison.Response{status_code: status}} -> {:error, {:http_status, status}}
+      {:ok, %{status_code: status}} -> {:error, {:http_status, status}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -284,13 +254,13 @@ defmodule Speedtest do
 
     {elapsed_us, result} =
       :timer.tc(fn ->
-        HTTPoison.post(url, payload, headers, recv_timeout: @ttl)
+        HTTP.client().post(url, payload, headers, recv_timeout: @ttl)
       end)
 
-    with {:ok, %HTTPoison.Response{status_code: 200}} <- result do
+    with {:ok, %{status_code: 200}} <- result do
       {:ok, %{elapsed_time: elapsed_us / 1_000_000, bytes: size, url: url}}
     else
-      {:ok, %HTTPoison.Response{status_code: status}} -> {:error, {:http_status, status}}
+      {:ok, %{status_code: status}} -> {:error, {:http_status, status}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -306,7 +276,7 @@ defmodule Speedtest do
 
   defp fetch_first_available([url | rest]) do
     case http_get(url) do
-      {:ok, %HTTPoison.Response{status_code: 200} = resp} -> {:ok, resp}
+      {:ok, %{status_code: 200} = resp} -> {:ok, resp}
       _ -> fetch_first_available(rest)
     end
   end
@@ -315,14 +285,14 @@ defmodule Speedtest do
     Logger.info("Retrieving speedtest.net configuration...")
 
     case http_get(@config_url) do
-      {:ok, %HTTPoison.Response{status_code: 200} = resp} -> {:ok, resp}
-      {:ok, %HTTPoison.Response{status_code: status}} -> {:error, {:http_status, status}}
+      {:ok, %{status_code: 200} = resp} -> {:ok, resp}
+      {:ok, %{status_code: status}} -> {:error, {:http_status, status}}
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp http_get(url) do
-    HTTPoison.get(url, default_headers(), follow_redirect: true, recv_timeout: @ttl)
+    HTTP.client().get(url, default_headers(), follow_redirect: true, recv_timeout: @ttl)
   end
 
   defp default_headers do
